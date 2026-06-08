@@ -1,0 +1,103 @@
+// fizz_few_shot_retriever — 着弾コメントに似た過去 Q/A を k 件取得。
+//
+// 責務 (一行): examples コーパスから入力コメントに類似する例を上位 k 件返す。
+//
+// 旧 openaituber chat/persona.ts の selectExamples の移植。文字 bigram の
+// Jaccard 類似度で並べ、スコア > 0 の上位 k 件を返す。全件スコア 0 なら
+// 空 (= 似た過去発話が無いので few-shot 無しで投げる方が、不適合な例で
+// 口調を引っ張られるよりマシ)。
+//
+// 入力 → 出力: (query, List[FewShotExample], k) → List[FewShotExample]
+
+import fizz_persona.examples
+
+type Scored = {
+  example: examples.FewShotExample,
+  score: Float,
+}
+
+// 空白を除いた文字 bigram 集合。
+fn bigrams(s: String) -> Set[String] = {
+  let clean = list.filter(string.chars(s), (c) => not is_ws(c))
+  set.from_list(bigram_list(clean))
+}
+
+local fn is_ws(c: String) -> Bool =
+  c == " " or c == "\t" or c == "\n" or c == "\r" or c == "　"
+
+local fn bigram_list(chars: List[String]) -> List[String] =
+  if list.len(chars) < 2 then []
+  else {
+    let a = list.get(chars, 0) ?? ""
+    let b = list.get(chars, 1) ?? ""
+    ["${a}${b}"] + bigram_list(list.drop(chars, 1))
+  }
+
+fn jaccard(a: Set[String], b: Set[String]) -> Float = {
+  let na = set.len(a)
+  let nb = set.len(b)
+  if na == 0 or nb == 0 then 0.0
+  else {
+    let inter = set.len(set.intersection(a, b))
+    int.to_float(inter) / int.to_float(na + nb - inter)
+  }
+}
+
+// query に対して上位 k 件 (スコア > 0 のみ)。
+fn select(query: String, corpus: List[examples.FewShotExample], k: Int) -> List[examples.FewShotExample] = {
+  let qg = bigrams(query)
+  if set.len(qg) == 0 then []
+  else {
+    let scored = list.filter_map(corpus, (ex) => {
+      let s = jaccard(qg, bigrams(ex.question))
+      if s > 0.0 then some(Scored { example: ex, score: s }) else none
+    })
+    // スコア降順 = 負値で昇順ソート。
+    let ranked = list.sort_by(scored, (sc) => 0.0 - sc.score)
+    list.map(list.take(ranked, k), (sc) => sc.example)
+  }
+}
+
+// ── in-file tests ────────────────────────────────────────────────────
+
+local fn ex(q: String, a: String) -> examples.FewShotExample =
+  examples.FewShotExample { question: q, answer: a }
+
+local fn corpus() -> List[examples.FewShotExample] = [
+  ex("今日なにしてたの？", "[happy]ずっと配信の準備してたよ！"),
+  ex("好きな食べ物は？", "[excited]ラムネ味のお菓子！"),
+  ex("なにして遊ぶ？", "[happy]ゲームしよ！"),
+  ex("おはよう", "[happy]おはよ〜！"),
+]
+
+test "retrieves the most similar question first" {
+  let picked = select("今日はなにしてたの", corpus(), 2)
+  assert(list.len(picked) >= 1)
+  assert_eq(list.first(picked)!.question, "今日なにしてたの？")
+}
+
+test "k bounds the result count" {
+  let picked = select("なにして", corpus(), 1)
+  assert_eq(list.len(picked), 1)
+}
+
+test "no overlap yields empty (no misleading few-shot)" {
+  assert_eq(list.len(select("XYZ123", corpus(), 5)), 0)
+}
+
+test "empty query yields empty" {
+  assert_eq(list.len(select("", corpus(), 5)), 0)
+}
+
+test "bigrams skip whitespace" {
+  let g = bigrams("a b")
+  // "ab" のみ (空白を挟まない)
+  assert(set.contains(g, "ab"))
+  assert_eq(set.len(g), 1)
+}
+
+test "jaccard identity and disjoint" {
+  let a = bigrams("あいうえ")
+  assert_eq(jaccard(a, a), 1.0)
+  assert_eq(jaccard(a, bigrams("XYZW")), 0.0)
+}

@@ -1,0 +1,7 @@
+[package]
+name = "fizz_few_shot_retriever"
+version = "0.1.0"
+description = "Fizz brain — retrieve top-k similar Q/A examples for a comment (bigram Jaccard). comment + corpus -> k examples"
+
+[dependencies]
+fizz_persona = { git = "https://github.com/Aid-On/fizz-persona", tag = "v0.2.0" }
